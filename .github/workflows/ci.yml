@@ -31,7 +31,7 @@ jobs:
       - name: compose config
         run: docker compose -f deploy/compose.yml config -q
         env:
-          SERVICE_TOKEN: ci-placeholder
+          WORKER_DEPARTURE_DEADLINES_SERVICE_TOKEN: ci-placeholder
           OPERATIONS_COST_BASE_URL: http://operations-cost-api:8084
       # Catches a base image tag that does not exist; nothing is pushed
       - name: docker build
