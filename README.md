@@ -17,11 +17,11 @@ The worker calls the internal routes with `Authorization: Bearer $SERVICE_TOKEN`
 security issue-service-token worker-departure-deadlines 720h
 ```
 
-In `develop`, `multi-tour-infra-postgres/scripts/dev-token.sh worker-departure-deadlines` runs that same command. In `qa` and `main` the value is a secret of the environment, set in `env/qa.env` or `env/main.env`: never in a compose file, an image or the repository, and renewed before it expires.
+In `develop`, `multi-tour-infra-postgres/scripts/dev-token.sh worker-departure-deadlines` runs that same command. In the root composition the value goes in `WORKER_DEPARTURE_DEADLINES_SERVICE_TOKEN`, which `deploy/compose.yml` hands to the worker as `SERVICE_TOKEN` (the `SERVICE_TOKEN` of that variables file is the event relay's). In `qa` and `main` the value is a secret of the environment, set in `env/qa.env` or `env/main.env`: never in a compose file, an image or the repository, and renewed before it expires.
 
 ## How to start it
 
-Copy `.env.example` to `.env` and set `SERVICE_TOKEN`. Then run it with Go 1.26, exporting the variables of `.env` first, or build the image and start it from the root composition, which includes `deploy/compose.yml` (the service is `worker-departure-deadlines`; it publishes no port, only `expose 8080` for `/health`):
+Copy `.env.example` to `.env` and set `SERVICE_TOKEN`. Then run it with Go 1.26, exporting the variables of `.env` first, or, with the token in `WORKER_DEPARTURE_DEADLINES_SERVICE_TOKEN` instead, build the image and start it from the root composition, which includes `deploy/compose.yml` (the service is `worker-departure-deadlines`; it publishes no port, only `expose 8080` for `/health`):
 
 ```
 go run ./cmd/worker
