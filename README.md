@@ -33,7 +33,7 @@ docker compose -f deploy/compose.yml up --build
 | `SERVICE_TOKEN` | none, required | Service credential, sent as `Authorization: Bearer` |
 | `OPERATIONS_COST_BASE_URL` | none, required (e.g. `http://operations-cost-api:8084`) | Internal base URL of `multi-tour-operations-cost-api`: scheme, host and port only |
 | `DEADLINES_INTERVAL` | `15m` | Time between two runs |
-| `BATCH_SIZE` | `100` | Departures asked per call at most (the `limit` of the ask) |
+| `BATCH_SIZE` | `100` | Departures asked per call at most (the `limit` of the ask); from 1 to 500, the most the service marks at once: a bigger value stops the worker at start |
 | `RUN_TIMEOUT` | `30s` (compose: `60s`) | Time limit of one run |
 | `HTTP_TIMEOUT` | `5s` | Time limit of each HTTP attempt |
 | `HTTP_ATTEMPTS` | `3` | Attempts per call (network, `429` and `5xx` only) |
