@@ -1,0 +1,30 @@
+# The worker has no database and no volume, and publishes no port: it reaches operations-cost by its name on the platform
+# network, and the root composition (multi-tour-infra-postgres) includes this file.
+services:
+  worker-departure-deadlines:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    environment:
+      # Issued by multi-tour-security for this worker; never versioned.
+      SERVICE_TOKEN: ${SERVICE_TOKEN:?SERVICE_TOKEN is required, set it in env/<environment>.env}
+      # No default: a wrong guess of a service name or port must fail visibly.
+      OPERATIONS_COST_BASE_URL: ${OPERATIONS_COST_BASE_URL:?OPERATIONS_COST_BASE_URL is required, e.g. http://operations-cost-api:8084}
+      DEADLINES_INTERVAL: ${DEADLINES_INTERVAL:-15m}
+      BATCH_SIZE: ${BATCH_SIZE:-100}
+      RUN_TIMEOUT: ${RUN_TIMEOUT:-60s}
+      HTTP_TIMEOUT: ${HTTP_TIMEOUT:-5s}
+      HTTP_ATTEMPTS: ${HTTP_ATTEMPTS:-3}
+      HEALTH_ADDR: ${HEALTH_ADDR:-:8080}
+    expose: ["8080"]
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    networks: [platform]
+
+networks:
+  platform:
+    external: true
