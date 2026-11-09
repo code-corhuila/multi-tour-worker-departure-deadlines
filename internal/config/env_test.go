@@ -75,6 +75,19 @@ func TestLoadDeadlines_refuses_an_interval_that_is_not_positive(t *testing.T) {
 	}
 }
 
+// The service refuses a limit above 500 (api spec 005): the worker stops at start instead of failing in every run, and says which variable.
+func TestLoadDeadlines_refuses_a_batch_size_above_what_the_service_accepts(t *testing.T) {
+	if _, err := config.LoadDeadlines(env(with("BATCH_SIZE", "500")...)); err != nil {
+		t.Errorf("BATCH_SIZE=500 refused: %v", err)
+	}
+	for _, bad := range []string{"501", "1000"} {
+		_, err := config.LoadDeadlines(env(with("BATCH_SIZE", bad)...))
+		if err == nil || !strings.Contains(err.Error(), "BATCH_SIZE") {
+			t.Errorf("BATCH_SIZE=%s: error = %v, want one that names the variable", bad, err)
+		}
+	}
+}
+
 // A base URL holds only scheme, host and port: a credential, a path, a query or a fragment would reach every request.
 func TestLoadDeadlines_refuses_a_base_url_with_more_than_scheme_host_and_port(t *testing.T) {
 	for _, bad := range []string{"operations-cost-api:8084", "ftp://x:1", "http://user:pass@x:1", "http://x:1/api", "http://x:1?q=1", "http://x:1#f", ""} {
