@@ -7,7 +7,7 @@ Governance and documentation live in [`multi-tour-docs`](https://github.com/code
 
 ## What it is
 
-Worker job 3 (ADR-004 D3, D10): every 15 minutes it asks `multi-tour-operations-cost-api`, through its internal route, to look at the departures of all tenants that passed a deadline. It holds no business rule and no database, and exposes only `/health`. What it does by story is in `multi-tour-docs` (`07-api/specs/operations-cost/multi-tour-worker-departure-deadlines`). **Today** it starts, reads its configuration and answers `/health`; the job that marks the departures past their estimated end comes next (HU-WRK-003, HU-OPS-003 part B). Starting the saga `cancel-departure` for a tenant that is inactive (HU-WRK-003 AC2) waits for that saga.
+Worker job 3 (ADR-004 D3, D10): every 15 minutes it asks `multi-tour-operations-cost-api`, through its internal route, to look at the departures of all tenants that passed a deadline. It holds no business rule and no database, and exposes only `/health`. What it does by story is in `multi-tour-docs` (`07-api/specs/operations-cost/multi-tour-worker-departure-deadlines`). The job asks `POST /api/v1/operations-cost/internal/departures/pending-regularization?limit=` (limit = `BATCH_SIZE`) and asks again while the batch comes back full, at most five times per run; a failed ask ends the run, counted, and the next run asks again, because the service marks by state. The call carries the id of the run as `Idempotency-Key` only so that the runtime repeats it after a transient failure; the service ignores it (HU-WRK-003, HU-OPS-003 part B). Starting the saga `cancel-departure` for a tenant that is inactive (HU-WRK-003 AC2) waits for that saga.
 
 ## The service token
 
@@ -33,7 +33,7 @@ docker compose -f deploy/compose.yml up --build
 | `SERVICE_TOKEN` | none, required | Service credential, sent as `Authorization: Bearer` |
 | `OPERATIONS_COST_BASE_URL` | none, required (e.g. `http://operations-cost-api:8084`) | Internal base URL of `multi-tour-operations-cost-api`: scheme, host and port only |
 | `DEADLINES_INTERVAL` | `15m` | Time between two runs |
-| `BATCH_SIZE` | `100` | Departures asked per call at most |
+| `BATCH_SIZE` | `100` | Departures asked per call at most (the `limit` of the ask) |
 | `RUN_TIMEOUT` | `30s` (compose: `60s`) | Time limit of one run |
 | `HTTP_TIMEOUT` | `5s` | Time limit of each HTTP attempt |
 | `HTTP_ATTEMPTS` | `3` | Attempts per call (network, `429` and `5xx` only) |
