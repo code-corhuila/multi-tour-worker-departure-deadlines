@@ -42,7 +42,9 @@ func (j *StartInactiveCancellations) Run(ctx context.Context, batch int) (proces
 		j.log.WarnContext(ctx, "the inactive tenants could not be listed, the next run asks again", "error", err)
 		return 0, 1
 	}
-	// shortcut: one ask per tenant, so a BATCH_SIZE above 100 reads 100; ask again while full if a tenant ever has more due.
+	// shortcut: one ask per tenant (oldest first, at most 100). A departure whose saga ended FAILED or COMPENSATED stays
+	// SCHEDULED and keeps its place, so a tenant with a full batch of those never reaches its newer ones; asking another page
+	// does not help: the fix is for operations-cost to leave out the departures whose cancellation already failed.
 	limit := min(batch, MaxDueLimit)
 	for _, tenant := range tenants {
 		if ctx.Err() != nil {
