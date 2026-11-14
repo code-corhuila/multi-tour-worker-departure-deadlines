@@ -17,12 +17,14 @@ const (
 )
 
 // Deadlines is everything the worker reads from the environment: the shared runtime variables plus the interval, the health
-// address and the internal base URL of the only service it calls.
+// address and the internal base URLs of the three services it calls.
 type Deadlines struct {
-	Runtime           runtimeconfig.Config
-	Interval          time.Duration
-	HealthAddr        string
-	OperationsCostURL string
+	Runtime            runtimeconfig.Config
+	Interval           time.Duration
+	HealthAddr         string
+	OperationsCostURL  string
+	IdentityAuditURL   string
+	CancelDepartureURL string
 }
 
 // LoadDeadlines reads the variables through getenv. Anything missing or malformed stops the worker at start; an error names
@@ -45,6 +47,12 @@ func LoadDeadlines(getenv func(string) string) (Deadlines, error) {
 		d.HealthAddr = s
 	}
 	if d.OperationsCostURL, err = baseURL(getenv, "OPERATIONS_COST_BASE_URL"); err != nil {
+		return Deadlines{}, err
+	}
+	if d.IdentityAuditURL, err = baseURL(getenv, "IDENTITY_AUDIT_BASE_URL"); err != nil {
+		return Deadlines{}, err
+	}
+	if d.CancelDepartureURL, err = baseURL(getenv, "CANCEL_DEPARTURE_BASE_URL"); err != nil {
 		return Deadlines{}, err
 	}
 	return d, nil

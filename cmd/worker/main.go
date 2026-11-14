@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	workerruntime "github.com/code-corhuila/multi-tour-worker-runtime"
 	"github.com/code-corhuila/multi-tour-worker-runtime/health"
 	"github.com/code-corhuila/multi-tour-worker-runtime/httpclient"
 	"github.com/code-corhuila/multi-tour-worker-runtime/logging"
@@ -43,9 +44,16 @@ func run() error {
 	}
 
 	log := logging.New(os.Stdout)
-	operationsCost := httpclient.New(cfg.OperationsCostURL, cfg.Runtime.ServiceToken,
-		httpclient.WithTimeout(cfg.Runtime.HTTPTimeout), httpclient.WithAttempts(cfg.Runtime.HTTPAttempts))
-	job := usecase.NewMarkPending(deadlineshttp.NewDepartures(operationsCost), log)
+	client := func(baseURL string) *httpclient.Client {
+		return httpclient.New(baseURL, cfg.Runtime.ServiceToken,
+			httpclient.WithTimeout(cfg.Runtime.HTTPTimeout), httpclient.WithAttempts(cfg.Runtime.HTTPAttempts))
+	}
+	departures := deadlineshttp.NewDepartures(client(cfg.OperationsCostURL))
+	job := inSequence{
+		usecase.NewMarkPending(departures, log),
+		usecase.NewStartInactiveCancellations(deadlineshttp.NewTenants(client(cfg.IdentityAuditURL)), departures,
+			deadlineshttp.NewCancellations(client(cfg.CancelDepartureURL)), log),
+	}
 	jobRunner, err := runner.New(job, runner.Options{Interval: cfg.Interval, BatchSize: cfg.Runtime.BatchSize,
 		RunTimeout: cfg.Runtime.RunTimeout, Logger: log})
 	if err != nil {
@@ -81,4 +89,21 @@ func run() error {
 		return nil
 	}
 	return failure
+}
+
+// inSequence is what one run of the job does (plan D-11): the runtime drives one job, so the two use cases run one after the other
+// in the same RUN_TIMEOUT, with the same batch, and the runner logs the sum.
+type inSequence []workerruntime.Job
+
+func (inSequence) Name() string { return "departure-deadlines" }
+
+func (s inSequence) Run(ctx context.Context, batch int) (processed, failed int) {
+	for _, job := range s {
+		if ctx.Err() != nil {
+			break
+		}
+		done, bad := job.Run(ctx, batch)
+		processed, failed = processed+done, failed+bad
+	}
+	return processed, failed
 }
