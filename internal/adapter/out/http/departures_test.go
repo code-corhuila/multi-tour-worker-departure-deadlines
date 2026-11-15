@@ -2,6 +2,7 @@ package http_test
 
 import (
 	"context"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -27,6 +28,7 @@ type fakeService struct {
 	path     string
 	query    string
 	header   http.Header
+	sent     string
 }
 
 func newService(t *testing.T, body string, statuses ...int) (*httptest.Server, *fakeService) {
@@ -35,13 +37,15 @@ func newService(t *testing.T, body string, statuses ...int) (*httptest.Server, *
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		n := int(f.calls.Add(1))
 		f.method, f.path, f.query, f.header = r.Method, r.URL.Path, r.URL.RawQuery, r.Header.Clone()
+		sent, _ := io.ReadAll(r.Body)
+		f.sent = string(sent)
 		status := http.StatusOK
 		if n <= len(f.statuses) {
 			status = f.statuses[n-1]
 		}
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(status)
-		if status == http.StatusOK {
+		if status < 300 {
 			_, _ = w.Write([]byte(f.body))
 			return
 		}
@@ -119,6 +123,63 @@ func TestDepartures_an_error_never_carries_the_token(t *testing.T) {
 	srv, _ := newService(t, ``, 403)
 
 	_, err := deadlineshttp.NewDepartures(newClient(srv.URL)).MarkPendingRegularization(ctx(), 10)
+
+	if err == nil || strings.Contains(err.Error(), token) {
+		t.Errorf("err = %v", err)
+	}
+}
+
+const tenantOne = "11111111-1111-4111-8111-111111111111"
+
+// I·AC-WK-02.1: a GET to the due list of the tenant of the path, with the limit and the credential; the codes are the answer.
+func TestDepartures_lists_the_due_departures_of_one_tenant(t *testing.T) {
+	srv, seen := newService(t, `{"data":[{"departureCode":"SAL-001"},{"departureCode":"SAL-002"}]}`)
+
+	codes, err := deadlineshttp.NewDepartures(newClient(srv.URL)).DueToStart(ctx(), tenantOne, 2)
+
+	if err != nil || len(codes) != 2 || codes[0] != "SAL-001" || codes[1] != "SAL-002" {
+		t.Fatalf("codes=%v err=%v", codes, err)
+	}
+	if seen.method != http.MethodGet || seen.path != "/api/v1/operations-cost/internal/tenants/"+tenantOne+"/departures/due-to-start" ||
+		seen.query != "limit=2" {
+		t.Errorf("call = %s %s?%s", seen.method, seen.path, seen.query)
+	}
+	if seen.header.Get("Authorization") != "Bearer "+token || seen.header.Get("X-Correlation-Id") != "run-1234" {
+		t.Errorf("headers = %v", seen.header)
+	}
+}
+
+func TestDepartures_due_refuses_a_bad_tenant_or_limit_without_calling(t *testing.T) {
+	srv, seen := newService(t, `{"data":[]}`)
+	a := deadlineshttp.NewDepartures(newClient(srv.URL))
+	for _, c := range []struct {
+		tenant string
+		limit  int
+	}{{tenantOne, 0}, {"../x", 10}, {"", 10}} {
+		if _, err := a.DueToStart(ctx(), c.tenant, c.limit); err == nil {
+			t.Errorf("tenant %q limit %d accepted", c.tenant, c.limit)
+		}
+	}
+	if seen.calls.Load() != 0 {
+		t.Errorf("calls = %d, want none", seen.calls.Load())
+	}
+}
+
+// More codes than the limit, a code that is not one, or a body that is not the list is an error, never a partial list.
+func TestDepartures_due_refuses_an_answer_that_is_not_what_the_contract_says(t *testing.T) {
+	for _, body := range []string{`{}`, `{"data":null}`, `not json`, `{"data":[{"departureCode":"../x"}]}`, `{"data":[{}]}`,
+		`{"data":[{"departureCode":"SAL-001"},{"departureCode":"SAL-002"},{"departureCode":"SAL-003"}]}`} {
+		srv, _ := newService(t, body)
+		if codes, err := deadlineshttp.NewDepartures(newClient(srv.URL)).DueToStart(ctx(), tenantOne, 2); err == nil || codes != nil {
+			t.Errorf("answer %q gave %v, %v; want an error", body, codes, err)
+		}
+	}
+}
+
+func TestDepartures_due_error_never_carries_the_token(t *testing.T) {
+	srv, _ := newService(t, ``, 403)
+
+	_, err := deadlineshttp.NewDepartures(newClient(srv.URL)).DueToStart(ctx(), tenantOne, 10)
 
 	if err == nil || strings.Contains(err.Error(), token) {
 		t.Errorf("err = %v", err)
