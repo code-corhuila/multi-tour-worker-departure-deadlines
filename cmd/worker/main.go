@@ -11,7 +11,12 @@ import (
 	"time"
 
 	"github.com/code-corhuila/multi-tour-worker-runtime/health"
+	"github.com/code-corhuila/multi-tour-worker-runtime/httpclient"
+	"github.com/code-corhuila/multi-tour-worker-runtime/logging"
+	"github.com/code-corhuila/multi-tour-worker-runtime/runner"
 
+	deadlineshttp "github.com/code-corhuila/multi-tour-worker-departure-deadlines/internal/adapter/out/http"
+	"github.com/code-corhuila/multi-tour-worker-departure-deadlines/internal/application/usecase"
 	"github.com/code-corhuila/multi-tour-worker-departure-deadlines/internal/config"
 )
 
@@ -30,10 +35,19 @@ func main() {
 	}
 }
 
-// run starts the worker: the configuration is read once and a bad one stops it. The job that asks the service to mark the
-// departures is added by the next task (the skeleton only answers /health).
+// run starts the worker: the configuration is read once and a bad one stops it.
 func run() error {
 	cfg, err := config.LoadDeadlines(os.Getenv)
+	if err != nil {
+		return err
+	}
+
+	log := logging.New(os.Stdout)
+	operationsCost := httpclient.New(cfg.OperationsCostURL, cfg.Runtime.ServiceToken,
+		httpclient.WithTimeout(cfg.Runtime.HTTPTimeout), httpclient.WithAttempts(cfg.Runtime.HTTPAttempts))
+	job := usecase.NewMarkPending(deadlineshttp.NewDepartures(operationsCost), log)
+	jobRunner, err := runner.New(job, runner.Options{Interval: cfg.Interval, BatchSize: cfg.Runtime.BatchSize,
+		RunTimeout: cfg.Runtime.RunTimeout, Logger: log})
 	if err != nil {
 		return err
 	}
@@ -47,12 +61,17 @@ func run() error {
 	defer stop()
 	serverErr := make(chan error, 1)
 	go func() { serverErr <- server.ListenAndServe() }()
+	runnerDone := make(chan struct{})
+	go func() { jobRunner.Start(ctx); close(runnerDone) }()
 
 	var failure error
 	select {
 	case <-ctx.Done():
 	case failure = <-serverErr:
+		stop()
 	}
+	// Ordered shutdown: the run in flight ends first (bounded by RUN_TIMEOUT), then the health server.
+	<-runnerDone
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil && failure == nil {
