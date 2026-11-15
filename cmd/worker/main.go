@@ -27,6 +27,8 @@ const (
 	writeTimeout      = 15 * time.Second
 	idleTimeout       = 60 * time.Second
 	shutdownTimeout   = 20 * time.Second
+	// The saga answers within 60 s (its compose); a few seconds more so its own answer, not this client, ends the wait
+	sagaAnswerTimeout = 65 * time.Second
 )
 
 func main() {
@@ -44,15 +46,18 @@ func run() error {
 	}
 
 	log := logging.New(os.Stdout)
-	client := func(baseURL string) *httpclient.Client {
+	client := func(baseURL string, timeout time.Duration) *httpclient.Client {
 		return httpclient.New(baseURL, cfg.Runtime.ServiceToken,
-			httpclient.WithTimeout(cfg.Runtime.HTTPTimeout), httpclient.WithAttempts(cfg.Runtime.HTTPAttempts))
+			httpclient.WithTimeout(timeout), httpclient.WithAttempts(cfg.Runtime.HTTPAttempts))
 	}
-	departures := deadlineshttp.NewDepartures(client(cfg.OperationsCostURL))
+	// The saga does its whole work inside the request (up to 60 s): cutting it at HTTP_TIMEOUT would interrupt it mid-step
+	// and leave it to the resume pass, so its client waits up to the saga's budget, bounded by the run.
+	sagaTimeout := min(sagaAnswerTimeout, cfg.Runtime.RunTimeout)
+	departures := deadlineshttp.NewDepartures(client(cfg.OperationsCostURL, cfg.Runtime.HTTPTimeout))
 	job := inSequence{
 		usecase.NewMarkPending(departures, log),
-		usecase.NewStartInactiveCancellations(deadlineshttp.NewTenants(client(cfg.IdentityAuditURL)), departures,
-			deadlineshttp.NewCancellations(client(cfg.CancelDepartureURL)), log),
+		usecase.NewStartInactiveCancellations(deadlineshttp.NewTenants(client(cfg.IdentityAuditURL, cfg.Runtime.HTTPTimeout)), departures,
+			deadlineshttp.NewCancellations(client(cfg.CancelDepartureURL, sagaTimeout)), log),
 	}
 	jobRunner, err := runner.New(job, runner.Options{Interval: cfg.Interval, BatchSize: cfg.Runtime.BatchSize,
 		RunTimeout: cfg.Runtime.RunTimeout, Logger: log})
