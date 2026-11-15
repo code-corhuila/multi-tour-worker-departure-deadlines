@@ -9,7 +9,12 @@ import (
 	runtimeconfig "github.com/code-corhuila/multi-tour-worker-runtime/config"
 )
 
-const defaultInterval = 15 * time.Minute // ADR-004 D10, HU-WRK-003 AC1
+const (
+	defaultInterval = 15 * time.Minute // ADR-004 D10, HU-WRK-003 AC1
+	// maxBatchSize is the most the service marks in one ask (its limit is 1 to 500, api spec 005); a bigger batch would be refused
+	// with a 400 in every run, so the worker stops at start instead.
+	maxBatchSize = 500
+)
 
 // Deadlines is everything the worker reads from the environment: the shared runtime variables plus the interval, the health
 // address and the internal base URL of the only service it calls.
@@ -26,6 +31,9 @@ func LoadDeadlines(getenv func(string) string) (Deadlines, error) {
 	shared, err := runtimeconfig.Load(getenv)
 	if err != nil {
 		return Deadlines{}, err
+	}
+	if shared.BatchSize > maxBatchSize {
+		return Deadlines{}, fmt.Errorf("BATCH_SIZE must be from 1 to %d, the most that operations-cost marks in one ask", maxBatchSize)
 	}
 	d := Deadlines{Runtime: shared, Interval: defaultInterval, HealthAddr: ":8080"}
 	if s := getenv("DEADLINES_INTERVAL"); s != "" {
