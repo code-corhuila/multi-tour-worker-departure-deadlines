@@ -1,0 +1,114 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	workerruntime "github.com/code-corhuila/multi-tour-worker-runtime"
+	"github.com/code-corhuila/multi-tour-worker-runtime/health"
+	"github.com/code-corhuila/multi-tour-worker-runtime/httpclient"
+	"github.com/code-corhuila/multi-tour-worker-runtime/logging"
+	"github.com/code-corhuila/multi-tour-worker-runtime/runner"
+
+	deadlineshttp "github.com/code-corhuila/multi-tour-worker-departure-deadlines/internal/adapter/out/http"
+	"github.com/code-corhuila/multi-tour-worker-departure-deadlines/internal/application/usecase"
+	"github.com/code-corhuila/multi-tour-worker-departure-deadlines/internal/config"
+)
+
+// The health server's limits are declared here, not left to defaults (Annex D).
+const (
+	readHeaderTimeout = 5 * time.Second
+	writeTimeout      = 15 * time.Second
+	idleTimeout       = 60 * time.Second
+	shutdownTimeout   = 20 * time.Second
+	// The saga answers within 60 s (its compose); a few seconds more so its own answer, not this client, ends the wait
+	sagaAnswerTimeout = 65 * time.Second
+)
+
+func main() {
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "departure-deadlines:", err)
+		os.Exit(1)
+	}
+}
+
+// run starts the worker: the configuration is read once and a bad one stops it.
+func run() error {
+	cfg, err := config.LoadDeadlines(os.Getenv)
+	if err != nil {
+		return err
+	}
+
+	log := logging.New(os.Stdout)
+	client := func(baseURL string, timeout time.Duration) *httpclient.Client {
+		return httpclient.New(baseURL, cfg.Runtime.ServiceToken,
+			httpclient.WithTimeout(timeout), httpclient.WithAttempts(cfg.Runtime.HTTPAttempts))
+	}
+	// The saga does its whole work inside the request (up to 60 s): cutting it at HTTP_TIMEOUT would interrupt it mid-step
+	// and leave it to the resume pass, so its client waits up to the saga's budget, bounded by the run.
+	sagaTimeout := min(sagaAnswerTimeout, cfg.Runtime.RunTimeout)
+	departures := deadlineshttp.NewDepartures(client(cfg.OperationsCostURL, cfg.Runtime.HTTPTimeout))
+	job := inSequence{
+		usecase.NewMarkPending(departures, log),
+		usecase.NewStartInactiveCancellations(deadlineshttp.NewTenants(client(cfg.IdentityAuditURL, cfg.Runtime.HTTPTimeout)), departures,
+			deadlineshttp.NewCancellations(client(cfg.CancelDepartureURL, sagaTimeout)), log),
+	}
+	jobRunner, err := runner.New(job, runner.Options{Interval: cfg.Interval, BatchSize: cfg.Runtime.BatchSize,
+		RunTimeout: cfg.Runtime.RunTimeout, Logger: log})
+	if err != nil {
+		return err
+	}
+
+	mux := http.NewServeMux()
+	mux.Handle("GET /health", health.Handler())
+	server := &http.Server{Addr: cfg.HealthAddr, Handler: mux, ReadHeaderTimeout: readHeaderTimeout,
+		WriteTimeout: writeTimeout, IdleTimeout: idleTimeout}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	serverErr := make(chan error, 1)
+	go func() { serverErr <- server.ListenAndServe() }()
+	runnerDone := make(chan struct{})
+	go func() { jobRunner.Start(ctx); close(runnerDone) }()
+
+	var failure error
+	select {
+	case <-ctx.Done():
+	case failure = <-serverErr:
+		stop()
+	}
+	// Ordered shutdown: the run in flight ends first (bounded by RUN_TIMEOUT), then the health server.
+	<-runnerDone
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+	if err := server.Shutdown(shutdownCtx); err != nil && failure == nil {
+		failure = err
+	}
+	if errors.Is(failure, http.ErrServerClosed) {
+		return nil
+	}
+	return failure
+}
+
+// inSequence is what one run of the job does (plan D-11): the runtime drives one job, so the two use cases run one after the other
+// in the same RUN_TIMEOUT, with the same batch, and the runner logs the sum.
+type inSequence []workerruntime.Job
+
+func (inSequence) Name() string { return "departure-deadlines" }
+
+func (s inSequence) Run(ctx context.Context, batch int) (processed, failed int) {
+	for _, job := range s {
+		if ctx.Err() != nil {
+			break
+		}
+		done, bad := job.Run(ctx, batch)
+		processed, failed = processed+done, failed+bad
+	}
+	return processed, failed
+}
